@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { 
   collection, 
   onSnapshot, 
@@ -9,60 +9,90 @@ import {
   doc, 
   query, 
   orderBy, 
-  serverTimestamp,
-  Timestamp 
+  serverTimestamp, 
+  Timestamp,
+  updateDoc
 } from 'firebase/firestore';
-import { db, auth } from '../../firebase';
-import { useRouter } from 'next/navigation';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db, auth, storage } from '../../firebase'; 
 
 interface Slideshow {
   id: string;
   title: string;
   author: string;
   authorEmail: string;
-  status: 'Published' | 'Draft';
-  views: number;
   createdAt: Timestamp | null;
+  images?: string[]; 
 }
 
 export default function Dashboard() {
   const [slides, setSlides] = useState<Slideshow[]>([]);
   const [loading, setLoading] = useState(true);
-  const router = useRouter();
+  
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const q = query(collection(db, "slideshows"), orderBy("createdAt", "desc"));
-
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const slidesData = snapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
       })) as Slideshow[];
-      
       setSlides(slidesData);
       setLoading(false);
     });
-
     return () => unsubscribe();
   }, []);
 
-  const handleCreate = async () => {
-    if (!auth.currentUser) return;
+  const handleCreateWithImages = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!auth.currentUser || !newTitle || !selectedFiles || selectedFiles.length === 0) {
+        alert("Please enter a title and select at least one image.");
+        return;
+    }
 
-    const title = prompt("Slideshow name:");
-    if (!title) return;
+    setIsUploading(true);
 
     try {
-      await addDoc(collection(db, "slideshows"), {
-        title: title,
+      const docRef = await addDoc(collection(db, "slideshows"), {
+        title: newTitle,
         author: auth.currentUser.displayName || "User",
         authorEmail: auth.currentUser.email,
-        status: 'Draft',
-        views: 0,
-        createdAt: serverTimestamp()
+        createdAt: serverTimestamp(),
+        images: [] 
       });
+
+      const slideshowId = docRef.id;
+      const imageUrls: string[] = [];
+
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        const storageRef = ref(storage, `slideshows/${slideshowId}/${file.name}`);
+        
+        await uploadBytes(storageRef, file);
+        const downloadURL = await getDownloadURL(storageRef);
+        imageUrls.push(downloadURL);
+      }
+
+      await updateDoc(doc(db, "slideshows", slideshowId), {
+        images: imageUrls
+      });
+
+      setNewTitle("");
+      setSelectedFiles(null);
+      if(fileInputRef.current) fileInputRef.current.value = "";
+      setIsModalOpen(false);
+
     } catch (error) {
-      console.error(error);
+      console.error("Error creating slideshow:", error);
+      alert("Failed to create slideshow. See console for details.");
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -77,8 +107,6 @@ export default function Dashboard() {
 
   const stats = {
     total: slides.length,
-    active: slides.filter(s => s.status === 'Published').length,
-    views: slides.reduce((acc, curr) => acc + curr.views, 0),
     uniqueAuthors: new Set(slides.map(s => s.authorEmail)).size
   };
 
@@ -87,7 +115,74 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-black text-gray-200 pt-24 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-black text-gray-200 pt-24 px-4 sm:px-6 lg:px-8 relative">
+      
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/70 backdrop-blur-xs">
+          <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-full max-w-md shadow-2xl">
+            <h2 className="text-2xl font-bold text-white mb-6">New Slideshow</h2>
+            
+            <form onSubmit={handleCreateWithImages} className="space-y-6">
+                <div>
+                    <label className="block text-sm font-medium text-zinc-400 mb-2">Title</label>
+                    <input 
+                        type="text"
+                        value={newTitle}
+                        onChange={(e) => setNewTitle(e.target.value)}
+                        placeholder="E.g., Q4 Report"
+                        className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-white transition-colors"
+                        required
+                        disabled={isUploading}
+                    />
+                </div>
+                
+                <div>
+                    <label className="block text-sm font-medium text-zinc-400 mb-2">Slides (Images)</label>
+                    <input 
+                        type="file"
+                        multiple
+                        accept="image/png, image/jpeg, image/jpg"
+                        ref={fileInputRef}
+                        onChange={(e) => setSelectedFiles(e.target.files)}
+                        className="block w-full text-sm text-zinc-400
+                          file:mr-4 file:py-2.5 file:px-4
+                          file:rounded-full file:border-0
+                          file:text-sm file:font-semibold
+                          file:bg-zinc-800 file:text-white
+                          hover:file:bg-zinc-700
+                          cursor-pointer"
+                        required
+                        disabled={isUploading}
+                    />
+                    <p className="text-xs text-zinc-500 mt-2">Select multiple images (PNG, JPG).</p>
+                </div>
+
+                <div className="flex gap-4 pt-2">
+                    <button 
+                        type="button"
+                        onClick={() => setIsModalOpen(false)}
+                        disabled={isUploading}
+                        className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white py-3 rounded-lg font-semibold transition-colors"
+                    >
+                        Cancel
+                    </button>
+                    <button 
+                        type="submit"
+                        disabled={isUploading}
+                        className="flex-1 bg-white text-black hover:bg-zinc-200 py-3 rounded-lg font-semibold transition-colors disabled:opacity-50 flex items-center justify-center"
+                    >
+                        {isUploading ? (
+                           <>
+                             <span className="animate-spin h-4 w-4 mr-2 border-2 border-black border-t-transparent rounded-full"></span>
+                             Uploading...
+                           </>
+                        ) : "Create & Upload"}
+                    </button>
+                </div>
+            </form>
+          </div>
+        </div>
+      )}
       
       <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-8">
         <div>
@@ -96,17 +191,15 @@ export default function Dashboard() {
         </div>
         
         <button 
-          onClick={handleCreate}
+          onClick={() => setIsModalOpen(true)}
           className="mt-4 md:mt-0 bg-white text-black hover:bg-zinc-200 font-semibold py-2 px-6 rounded-lg transition-colors shadow-lg shadow-white/10"
         >
           + Create Slideshow
         </button>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 mb-8">
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 mb-8">
         <StatsCard title="Total Slideshows" value={stats.total.toString()} change="Total in database" color="text-emerald-400" />
-        <StatsCard title="Published" value={stats.active.toString()} change="Status Published" color="text-blue-400" />
-        <StatsCard title="Total Views" value={stats.views.toString()} change="Sum of all" color="text-purple-400" />
         <StatsCard title="Authors" value={stats.uniqueAuthors.toString()} change="Active users" color="text-orange-400" />
       </div>
 
@@ -128,8 +221,7 @@ export default function Dashboard() {
               <thead className="bg-zinc-900/50 text-zinc-500 uppercase font-medium text-xs">
                 <tr>
                   <th className="px-6 py-3">Title</th>
-                  <th className="px-6 py-3">Status</th>
-                  <th className="px-6 py-3 text-right">Views</th>
+                  <th className="px-6 py-3 text-right">Slides</th>
                   <th className="px-6 py-3 text-right">Actions</th>
                 </tr>
               </thead>
@@ -142,11 +234,8 @@ export default function Dashboard() {
                         {slide.authorEmail} • {formatDate(slide.createdAt)}
                       </div>
                     </td>
-                    <td className="px-6 py-4">
-                      <StatusBadge status={slide.status} />
-                    </td>
                     <td className="px-6 py-4 text-right font-mono text-zinc-300">
-                      {slide.views}
+                      {slide.images?.length || 0} 
                     </td>
                     <td className="px-6 py-4 text-right">
                       <button 
@@ -200,18 +289,5 @@ function StatsCard({ title, value, change, color }: { title: string, value: stri
         {change}
       </div>
     </div>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const isPublished = status === 'Published';
-  return (
-    <span className={`px-2.5 py-0.5 rounded-full text-xs border ${
-        isPublished 
-        ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" 
-        : "bg-zinc-700/30 text-zinc-400 border-zinc-700"
-    }`}>
-      {status}
-    </span>
   );
 }

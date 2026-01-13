@@ -3,6 +3,7 @@ import { initializeApp } from "firebase/app";
 import { getAnalytics, Analytics } from "firebase/analytics"; // Added Analytics type for TS
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 
 // NOTE: You can remove these side-effect imports as you are using the modular SDK above
 // import 'firebase/firestore'
@@ -20,6 +21,7 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
+export const storage = getStorage(app);
 
 // FIX: Check if window is defined before initializing analytics
 // Next.js runs this on the server (where window is undefined), causing the crash.
